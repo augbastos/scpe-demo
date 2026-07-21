@@ -12,13 +12,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The published Marketplace Action: deterministic risk + the repo's own tests,
-      # no LLM, no secrets. Emits results.json.
-      - id: seal
-        uses: augbastos/crowdcoding@v0.1.1
+      # The signed envelope rides in the PR body (base64) so merging keeps the repo clean —
+      # no binary blob in history. Extract it here for the seal to verify. The PR body is
+      # passed via env (never inlined into the script) to avoid injection from a hostile body.
+      - name: Extract the signed envelope from the PR body
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          mkdir -p .crowdcoding
+          printf '%s' "$PR_BODY" \
+            | sed -n '/crowdcoding-envelope:v1/,/-->/p' \
+            | sed '1d;$d' \
+            | base64 -d > .crowdcoding/contribution.cc.zip
 
-      # Render the decision-first seal and post it on the PR. (Same-repo PRs have
-      # pull-requests: write; fork PRs use the two-job workflow_run split instead.)
+      # Make the repo's own test runner available, then run the Marketplace Action.
+      - run: pip install pytest
+      - id: seal
+        uses: augbastos/crowdcoding@v0.1.2
+
       - name: Post the seal comment
         run: |
           pipx run crowdcoding seal \
