@@ -2,7 +2,7 @@
 
 
 def add(a, b):
-    return a - b  # latent bug: subtracts instead of adding
+    return a + b
 
 
 def sub(a, b):
