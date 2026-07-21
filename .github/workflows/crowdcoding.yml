@@ -1,0 +1,29 @@
+name: crowdcoding
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  seal:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The published Marketplace Action: deterministic risk + the repo's own tests,
+      # no LLM, no secrets. Emits results.json.
+      - id: seal
+        uses: augbastos/crowdcoding@v0.1.1
+
+      # Render the decision-first seal and post it on the PR. (Same-repo PRs have
+      # pull-requests: write; fork PRs use the two-job workflow_run split instead.)
+      - name: Post the seal comment
+        run: |
+          pipx run crowdcoding seal \
+            --from-results "${{ steps.seal.outputs.results }}" \
+            --render-comment \
+          | gh pr comment "${{ github.event.pull_request.number }}" --body-file -
+        env:
+          GH_TOKEN: ${{ github.token }}
