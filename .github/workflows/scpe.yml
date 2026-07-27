@@ -1,0 +1,142 @@
+name: scpe
+
+# Drop this file in a repo as .github/workflows/scpe.yml to re-verify every
+# scpe contribution PR and post a decision-first seal (identity, risk, tests,
+# provenance). Nothing lands until you merge.
+#
+# Two triggers, two trust levels — the standard fork-safe pattern:
+#   pull_request  -> UNTRUSTED "verify" job: runs the contributor's tests, has NO
+#                    secrets and a read-only token, and never persists credentials to
+#                    disk. Safe to execute code from a stranger's fork.
+#   workflow_run  -> TRUSTED "seal" job: runs afterwards in the BASE repo with a
+#                    write-scoped token. It only posts the seal comment; it never
+#                    checks out or runs contributor code, and it installs nothing at
+#                    all, so the only binaries it runs are the runner's own
+#                    pre-installed `python3` and `gh`.
+#
+# GATE MODE (policy, opt-in): set `require: "true"` on the `augbastos/scpe@v0.2`
+# step below to make this repository REQUIRE a signed scpe contribution. A PR with
+# no attestation, or any status other than "verified" (spec scpe/0.1 §8), then
+# FAILS this workflow's "seal" job and posts "❌ Not verifiable" instead of the
+# usual report. The require DECISION is still computed entirely inside the
+# untrusted "verify" job (no secrets, read-only token) — the trusted "seal" job
+# only ever reads that decision from the artifact, never recomputes it. Default
+# is "false": today's informational-only seal, unchanged.
+on:
+  pull_request:
+  workflow_run:
+    workflows: ["scpe"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:                       # UNTRUSTED — no secrets; safe to run contributor code
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false   # never write the token into .git/config
+          # REQUIRED for the seal, not a nicety. A spec attestation carries the
+          # DIGEST of the diff, never the diff itself (§9), so the seal has to
+          # rebuild `git diff BASE...HEAD` locally and hash that. The default
+          # `fetch-depth: 1` does not fetch the base commit, so there is nothing to
+          # diff against and every PR reports as tampered. Full history is the
+          # honest cost of checking integrity against something you fetched
+          # yourself instead of trusting what the contributor shipped you.
+          fetch-depth: 0
+
+      # No extraction step here on purpose. The signed attestation rides in the PR
+      # body (spec §9) so merging stays clean — no binary blob in history — and the
+      # block is located and decoded by the reference verifier itself
+      # (verify_envelope.py's SCPE-ATTESTATION-v1 reader), not by a `sed` in this
+      # file. One parser means one answer about what was verified: a second,
+      # workflow-local extractor could disagree with the verifier about which bytes
+      # the signature covers, and that disagreement is exactly the bug class this
+      # protocol exists to remove. The Action passes the PR body through as an env
+      # var, never on a command line.
+
+      # Install your repo's own test dependencies here so run-tests can run them,
+      # e.g.  pip install -e ".[test]"  /  npm ci  /  cargo fetch. The seal still
+      # reports identity + risk even if this repo has no runner.
+      - run: pip install pytest
+
+      - id: seal                       # deterministic risk + tests, no LLM, no secrets
+        uses: augbastos/scpe@v0.2
+        with:
+          require: "false"             # flip to "true" to require a signed contribution
+          # level: "1"                 # zero-friction mode: AI-disclosure lint only,
+                                        # no attestation/signing key needed (default "2"
+                                        # = the full signed seal)
+          # keys: ".scpe/trusted.keys"  # verify against keys YOU pinned instead of the
+                                        # contributor's forge account — needed for
+                                        # air-gapped runners and provider: local. The
+                                        # seal discloses that it was used.
+
+      # Hand the verdict + PR number to the trusted job. The number MUST travel in the
+      # artifact: github.event.workflow_run.pull_requests is empty for fork PRs.
+      - run: echo "${{ github.event.pull_request.number }}" > pr-number.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scpe-results
+          path: |
+            results.json
+            pr-number.txt
+
+  seal:                         # TRUSTED — write token; never runs untrusted code
+    if: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      # A job-level permissions block REPLACES the workflow default (it does not merge),
+      # so every unlisted scope is set to none. actions/download-artifact@v4 with run-id
+      # needs actions:read to reach a sibling run's artifact — without it the download
+      # fails and the gate never runs.
+      actions: read
+    steps:
+      - name: Download the verify job's results
+        uses: actions/download-artifact@v4
+        with:
+          name: scpe-results
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - name: Post the seal comment (or the gate failure)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pr="$(cat pr-number.txt)"
+          # The require DECISION was computed upstream, in the untrusted "verify"
+          # job (results.json's gate_pass) — this step only ever READS it, never
+          # recomputes it from raw contributor input. Missing key (require=false,
+          # today's informational path) defaults to "pass": nothing changes.
+          gate_pass="$(python3 -c "import json; print(str(json.load(open('results.json')).get('gate_pass', True)).lower())")"
+          if [ "$gate_pass" = "false" ]; then
+            # results.json carries its own fail_message (naming the exact §8 status
+            # and the reason behind it, or level 1's missing disclosure) — use it
+            # verbatim; fall back to the generic message only for a results.json
+            # written by an older tag. Either way this is a READ, never a recompute.
+            msg="$(python3 -c "import json; d = json.load(open('results.json')); print(d.get('fail_message') or '❌ Not verifiable — this repository requires a signed SCPE contribution (spec scpe/0.1).')")"
+            gh pr comment "$pr" --repo "${{ github.repository }}" --body "$msg"
+            exit 1
+          fi
+          # The comment is rendered upstream too, in the same untrusted job, and
+          # posted here byte-for-byte. That does NOT weaken the split: this job
+          # already posted attacker-influenced text before — every field in the seal
+          # comes from the contributor's PR — so moving the rendering does not
+          # change the trust level of the CONTENT, only where the string is built.
+          # What it does change is that the obligation to neutralize that content
+          # (fence escaping, length caps) now sits in one tested renderer instead of
+          # in this YAML. The trusted job stays free of checkouts, installs and
+          # contributor code.
+          comment="$(python3 -c "import json; d = json.load(open('results.json')); print(d.get('comment') or '')")"
+          if [ -n "$comment" ]; then
+            gh pr comment "$pr" --repo "${{ github.repository }}" --body "$comment"
+          else
+            # Nothing to post rather than something invented: this job has no way to
+            # render a seal without re-deriving the verdict, which is precisely what
+            # it must never do.
+            echo "::notice::results.json carried no rendered comment; nothing posted."
+          fi
