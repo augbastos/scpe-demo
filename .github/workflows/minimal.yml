@@ -1,0 +1,27 @@
+name: scpe-minimal
+
+# Isolation probe: the shipped template is one file that triggers on `pull_request`
+# AND on `workflow_run` of a workflow named "scpe" — itself. This file is the same
+# verify step with the self-referencing trigger removed, so a green run here proves
+# the Action resolves and the failure is in that trigger, not in the Action.
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The merge commit is what a reviewer reads; fetch enough history for the
+          # base..head diff the seal reports.
+          fetch-depth: 0
+
+      - uses: augbastos/scpe@v0.2
+        with:
+          level: "2"
+          require: "false"
