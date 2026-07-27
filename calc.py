@@ -1,4 +1,4 @@
-"""A tiny calculator — the demo target for a crowdcoding contribution."""
+"""A tiny calculator — the demo target for a signed SCPE contribution."""
 
 
 def add(a, b):
