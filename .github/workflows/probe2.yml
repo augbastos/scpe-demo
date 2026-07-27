@@ -1,0 +1,23 @@
+name: scpe-probe2
+
+# Second isolation probe. Identical to scpe-minimal, which registers and runs green,
+# plus the one thing the shipped template has and it does not: a `workflow_run`
+# trigger naming this same workflow. If this file fails to register while
+# scpe-minimal registers, the self-reference is the defect.
+
+on:
+  pull_request:
+  workflow_run:
+    workflows: ["scpe-probe2"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo "probe"
