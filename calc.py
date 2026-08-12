@@ -11,3 +11,13 @@ def sub(a, b):
 
 def mul(a, b):
     return a * b
+
+
+def cube(n):
+    return n * n * n
+
+
+
+def square(n):
+    return n * n
+
